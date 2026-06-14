@@ -2,15 +2,27 @@ import json
 from pathlib import Path
 
 
-METRIC_FILES = {
-    "Baseline TF-IDF + Logistic Regression": Path("models/baseline_metrics.json"),
-    "DistilBERT classifier": Path("models/transformer_metrics.json"),
-}
+def metric_files() -> list[tuple[str, Path]]:
+    files = [("Baseline TF-IDF + Logistic Regression", Path("models/baseline_metrics.json"))]
+
+    legacy_path = Path("models/transformer_metrics.json")
+    if legacy_path.exists():
+        files.append(("Legacy transformer", legacy_path))
+
+    for path in sorted(Path("models").glob("transformer_metrics_*.json")):
+        try:
+            metrics = json.loads(path.read_text())
+            name = metrics.get("model", path.stem.replace("transformer_metrics_", ""))
+        except json.JSONDecodeError:
+            name = path.stem.replace("transformer_metrics_", "")
+        files.append((name, path))
+
+    return files
 
 
 def main() -> None:
     found = False
-    for name, path in METRIC_FILES.items():
+    for name, path in metric_files():
         if not path.exists():
             print(f"{name}: no metrics found at {path}")
             continue
@@ -18,6 +30,8 @@ def main() -> None:
         found = True
         metrics = json.loads(path.read_text())
         print(f"\n{name}")
+        if "decision_threshold" in metrics:
+            print(f"  Decision threshold: {metrics.get('decision_threshold'):.2f}")
         print(f"  F1: {metrics.get('f1', 0):.3f}")
         print(f"  Disaster recall: {metrics.get('recall_disaster', 0):.3f}")
         print(f"  Disaster precision: {metrics.get('precision_disaster', 0):.3f}")
