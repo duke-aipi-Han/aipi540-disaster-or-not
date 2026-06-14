@@ -6,6 +6,7 @@ joblib
 matplotlib
 torch
 transformers
+huggingface_hub
 accelerate
 ipykernel
 notebook
