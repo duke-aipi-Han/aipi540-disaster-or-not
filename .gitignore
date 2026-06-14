@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pycache_compile/
+*.pyc
+.env
+.streamlit/secrets.toml
+models/transformer-checkpoints/
+*.log
+
+# disable github worflows until setup
+.github/workflows/*
