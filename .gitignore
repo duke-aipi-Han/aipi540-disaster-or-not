@@ -7,6 +7,12 @@ __pycache__/
 models/transformer-checkpoints/
 *.log
 
+# kaggle submission files
+/submission/
+
+# trained model folders are too large for repos
+models/transformers/
+
 data/*.zip
 
 # disable github worflows until setup

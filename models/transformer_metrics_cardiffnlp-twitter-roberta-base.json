@@ -1,0 +1,124 @@
+{
+  "model": "cardiffnlp/twitter-roberta-base",
+  "model_slug": "cardiffnlp-twitter-roberta-base",
+  "model_dir": "models\\transformers\\cardiffnlp-twitter-roberta-base",
+  "decision_threshold": 0.75,
+  "class_weighted_loss": true,
+  "default_threshold": {
+    "accuracy": 0.8397898883782009,
+    "f1": 0.8170914542728636,
+    "precision_disaster": 0.8014705882352942,
+    "recall_disaster": 0.8333333333333334,
+    "confusion_matrix": [
+      [
+        734,
+        135
+      ],
+      [
+        109,
+        545
+      ]
+    ]
+  },
+  "accuracy": 0.8522652659225214,
+  "f1": 0.8215701823949246,
+  "precision_disaster": 0.8533772652388797,
+  "recall_disaster": 0.7920489296636085,
+  "confusion_matrix": [
+    [
+      780,
+      89
+    ],
+    [
+      136,
+      518
+    ]
+  ],
+  "stress_accuracy": 1.0,
+  "stress_rows": [
+    {
+      "category": "metaphor",
+      "text": "This group project is a disaster and my inbox is on fire.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "sarcasm",
+      "text": "Forgot coffee this morning. Truly a national emergency.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "slang",
+      "text": "yo the creek overflowed and water is in people's houses fr",
+      "target": 1,
+      "prediction": 1,
+      "correct": true
+    },
+    {
+      "category": "hashtag",
+      "text": "#wildfire smoke moving fast near Santa Rosa, evacuation warning issued",
+      "target": 1,
+      "prediction": 1,
+      "correct": true
+    },
+    {
+      "category": "all_caps",
+      "text": "TORNADO WARNING TAKE SHELTER NOW IN BASEMENT OR INTERIOR ROOM",
+      "target": 1,
+      "prediction": 1,
+      "correct": true
+    },
+    {
+      "category": "emoji",
+      "text": "my haircut is a disaster \ud83d\ude2d\ud83d\ude2d\ud83d\ude2d",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "location",
+      "text": "I-95 near exit 12 blocked after multi-car crash, responders on scene",
+      "target": 1,
+      "prediction": 1,
+      "correct": true
+    },
+    {
+      "category": "ambiguous",
+      "text": "The concert crowd was a riot last night.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "metaphor",
+      "text": "This party was fire and the crowd exploded when the band came out.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "metaphor",
+      "text": "California dreaming is on fire today.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "slang",
+      "text": "I am dead after that workout.",
+      "target": 0,
+      "prediction": 0,
+      "correct": true
+    },
+    {
+      "category": "real_report",
+      "text": "Explosion at the refinery reported by local officials.",
+      "target": 1,
+      "prediction": 1,
+      "correct": true
+    }
+  ]
+}

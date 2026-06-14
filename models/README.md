@@ -12,6 +12,6 @@ baseline_metrics.json
 Transformer:
 
 ```text
-distilbert-disaster/
-transformer_metrics.json
+transformers/<model-name>/
+transformer_metrics_<model-name>.json
 ```

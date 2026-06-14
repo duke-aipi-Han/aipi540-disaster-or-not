@@ -1,26 +1,28 @@
+import json
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import joblib
 import streamlit as st
 
-from src.disasters import EXAMPLE_TWEETS, LABELS, Prediction, heuristic_predict, simple_explanation
+from src.disasters import EXAMPLE_TWEETS, Prediction, heuristic_predict, simple_explanation
 
 
 BASELINE_MODEL_PATH = Path("models/tfidf_logreg.joblib")
 BASELINE_METRICS_PATH = Path("models/baseline_metrics.json")
-TRANSFORMER_MODEL_DIR = Path("models/distilbert-disaster")
-TRANSFORMER_METRICS_PATH = Path("models/transformer_metrics.json")
+TRANSFORMER_ROOT = Path("models/transformers")
+LEGACY_TRANSFORMER_MODEL_DIR = Path("models/distilbert-disaster")
+LEGACY_TRANSFORMER_METRICS_PATH = Path("models/transformer_metrics.json")
 
 
 st.set_page_config(
     page_title="Disaster Tweet Evaluator",
     page_icon="DT",
-    layout="centered",
+    layout="wide",
 )
 
 
@@ -30,10 +32,53 @@ def load_baseline_model():
 
 
 @st.cache_resource(show_spinner=False)
-def load_transformer_pipeline():
-    from transformers import pipeline
+def load_transformer_model(model_dir: str):
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    return pipeline("text-classification", model=str(TRANSFORMER_MODEL_DIR), tokenizer=str(TRANSFORMER_MODEL_DIR))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+    model.to(device)
+    model.eval()
+    return tokenizer, model, device
+
+
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def discover_transformers() -> list[dict]:
+    artifacts = []
+
+    if TRANSFORMER_ROOT.exists():
+        for model_dir in sorted(path for path in TRANSFORMER_ROOT.iterdir() if path.is_dir()):
+            metrics_path = Path("models") / f"transformer_metrics_{model_dir.name}.json"
+            if (model_dir / "config.json").exists():
+                metrics = read_json(metrics_path)
+                artifacts.append(
+                    {
+                        "name": metrics.get("model", model_dir.name),
+                        "model_dir": model_dir,
+                        "metrics_path": metrics_path,
+                        "metrics": metrics,
+                    }
+                )
+
+    if LEGACY_TRANSFORMER_MODEL_DIR.exists() and (LEGACY_TRANSFORMER_MODEL_DIR / "config.json").exists():
+        metrics = read_json(LEGACY_TRANSFORMER_METRICS_PATH)
+        artifacts.append(
+            {
+                "name": metrics.get("model", "distilbert-base-uncased"),
+                "model_dir": LEGACY_TRANSFORMER_MODEL_DIR,
+                "metrics_path": LEGACY_TRANSFORMER_METRICS_PATH,
+                "metrics": metrics,
+            }
+        )
+
+    return artifacts
 
 
 def baseline_predict(text: str) -> Prediction:
@@ -64,72 +109,107 @@ def baseline_predict(text: str) -> Prediction:
     )
 
 
-def transformer_predict(text: str) -> Prediction:
-    classifier = load_transformer_pipeline()
-    result = classifier(text, truncation=True)[0]
-    raw_label = result["label"].upper()
-    label = 1 if raw_label in {"LABEL_1", "1", "REAL DISASTER", "DISASTER"} else 0
+def transformer_predict(text: str, artifact: dict) -> Prediction:
+    import torch
+
+    metrics = artifact["metrics"]
+    threshold = float(metrics.get("decision_threshold", 0.5))
+    tokenizer, model, device = load_transformer_model(str(artifact["model_dir"]))
+    inputs = tokenizer(text, truncation=True, padding=True, max_length=128, return_tensors="pt")
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+
+    with torch.no_grad():
+        probs = torch.softmax(model(**inputs).logits, dim=1)[0]
+
+    disaster_probability = float(probs[1].cpu())
+    label = 1 if disaster_probability >= threshold else 0
+    confidence = disaster_probability if label == 1 else 1.0 - disaster_probability
+
     return Prediction(
         label=label,
-        confidence=float(result["score"]),
+        confidence=confidence,
         explanation=simple_explanation(text),
-        model_name="DistilBERT classifier",
+        model_name=f"{artifact['name']} (threshold {threshold:.2f})",
     )
 
 
-def available_models() -> list[str]:
-    models = []
+def all_predictions(text: str) -> list[Prediction]:
+    predictions = []
     if BASELINE_MODEL_PATH.exists():
-        models.append("Baseline")
-    if TRANSFORMER_MODEL_DIR.exists():
-        models.append("Transformer")
-    models.append("Keyword fallback")
-    return models
+        predictions.append(baseline_predict(text))
+
+    for artifact in discover_transformers():
+        try:
+            predictions.append(transformer_predict(text, artifact))
+        except Exception as exc:
+            predictions.append(
+                Prediction(
+                    label=0,
+                    confidence=0.0,
+                    explanation=f"Could not load model: {exc}",
+                    model_name=str(artifact["name"]),
+                )
+            )
+
+    predictions.append(heuristic_predict(text))
+    return predictions
 
 
-def predict(text: str, model_choice: str) -> Prediction:
-    if model_choice == "Baseline" and BASELINE_MODEL_PATH.exists():
-        return baseline_predict(text)
-    if model_choice == "Transformer" and TRANSFORMER_MODEL_DIR.exists():
-        return transformer_predict(text)
-    return heuristic_predict(text)
+def metric_row(name: str, metrics: dict) -> dict:
+    return {
+        "Model": name,
+        "F1": metrics.get("f1"),
+        "Recall": metrics.get("recall_disaster"),
+        "Precision": metrics.get("precision_disaster"),
+        "Stress": metrics.get("stress_accuracy"),
+        "Threshold": metrics.get("decision_threshold"),
+    }
 
 
-def show_metric_file(path: Path, title: str) -> None:
-    if not path.exists():
-        st.caption(f"{title}: not trained yet.")
-        return
+def show_model_metrics() -> None:
+    rows = []
+    if BASELINE_METRICS_PATH.exists():
+        rows.append(metric_row("TF-IDF + Logistic Regression", read_json(BASELINE_METRICS_PATH)))
 
-    import json
+    for artifact in discover_transformers():
+        rows.append(metric_row(artifact["name"], artifact["metrics"]))
 
-    metrics = json.loads(path.read_text())
-    st.caption(
-        f"{title}: F1 {metrics.get('f1', 0):.3f}, "
-        f"disaster recall {metrics.get('recall_disaster', 0):.3f}, "
-        f"stress accuracy {metrics.get('stress_accuracy', 0):.3f}"
-    )
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    else:
+        st.caption("No saved metrics found yet.")
 
 
 def main() -> None:
     st.title("Disaster Tweet Evaluator")
-    st.caption("Classify whether a social post reports a real disaster, then inspect where evaluation gets tricky.")
+    st.caption("Compare the baseline and every saved transformer model on the same tweet.")
+
+    with st.sidebar:
+        st.header("Saved Metrics")
+        show_model_metrics()
 
     example_name = st.selectbox("Example tweet", list(EXAMPLE_TWEETS.keys()))
-    default_text = EXAMPLE_TWEETS[example_name]
-    tweet = st.text_area("Tweet text", value=default_text, height=120)
-    model_choice = st.radio("Model", available_models(), horizontal=True)
+    tweet = st.text_area("Tweet text", value=EXAMPLE_TWEETS[example_name], height=120)
 
-    if st.button("Classify", type="primary") or tweet:
-        prediction = predict(tweet, model_choice)
-        st.metric("Prediction", prediction.label_name, f"{prediction.confidence:.1%} confidence")
-        st.progress(prediction.confidence)
-        st.write(f"Model: {prediction.model_name}")
-        st.write(f"Explanation: {prediction.explanation}")
+    if st.button("Compare Models", type="primary"):
+        predictions = all_predictions(tweet)
+        rows = [
+            {
+                "Model": prediction.model_name,
+                "Prediction": prediction.label_name,
+                "Confidence": f"{prediction.confidence:.1%}",
+                "Explanation": prediction.explanation,
+            }
+            for prediction in predictions
+        ]
+        st.dataframe(rows, hide_index=True, use_container_width=True)
 
-        if prediction.label == 1:
-            st.warning("Treat this as potentially emergency-relevant.")
+        disaster_votes = sum(prediction.label for prediction in predictions)
+        if disaster_votes:
+            st.warning(f"{disaster_votes} of {len(predictions)} models flagged this as disaster-relevant.")
         else:
-            st.success("Likely not an emergency report.")
+            st.success("No model flagged this as a real disaster.")
+
 
 if __name__ == "__main__":
     main()
