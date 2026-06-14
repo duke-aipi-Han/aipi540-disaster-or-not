@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -12,11 +13,24 @@ import streamlit as st
 from src.disasters import EXAMPLE_TWEETS, Prediction, heuristic_predict, simple_explanation
 
 
-BASELINE_MODEL_PATH = Path("models/tfidf_logreg.joblib")
-BASELINE_METRICS_PATH = Path("models/baseline_metrics.json")
-TRANSFORMER_ROOT = Path("models/transformers")
-LEGACY_TRANSFORMER_MODEL_DIR = Path("models/distilbert-disaster")
-LEGACY_TRANSFORMER_METRICS_PATH = Path("models/transformer_metrics.json")
+HF_MODEL_REPO = os.getenv("HF_MODEL_REPO", "hw391/disaster-or-not-tweet-model")
+LOCAL_MODEL_ROOT = PROJECT_ROOT / "models"
+BASELINE_MODEL_PATH = LOCAL_MODEL_ROOT / "tfidf_logreg.joblib"
+BASELINE_METRICS_PATH = LOCAL_MODEL_ROOT / "baseline_metrics.json"
+TRANSFORMER_ROOT = LOCAL_MODEL_ROOT / "transformers"
+LEGACY_TRANSFORMER_MODEL_DIR = LOCAL_MODEL_ROOT / "distilbert-disaster"
+LEGACY_TRANSFORMER_METRICS_PATH = LOCAL_MODEL_ROOT / "transformer_metrics.json"
+REMOTE_MODEL_SUBFOLDERS = [
+    "cardiffnlp-twitter-roberta-base",
+    "distilbert-base-uncased",
+]
+REMOTE_IGNORE_PATTERNS = [
+    "models/transformer-checkpoints/**",
+    "**/optimizer.pt",
+    "**/scheduler.pt",
+    "**/rng_state.pth",
+    "**/scaler.pt",
+]
 
 
 st.set_page_config(
@@ -28,7 +42,7 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner=False)
 def load_baseline_model():
-    return joblib.load(BASELINE_MODEL_PATH)
+    return joblib.load(resolve_baseline_model_path())
 
 
 @st.cache_resource(show_spinner=False)
@@ -36,12 +50,66 @@ def load_transformer_model(model_dir: str):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+    if model_dir.startswith("hf://"):
+        model_dir = str(download_remote_transformer_model(model_dir.removeprefix("hf://")))
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSequenceClassification.from_pretrained(model_dir)
     model.to(device)
     model.eval()
     return tokenizer, model, device
+
+
+@st.cache_resource(show_spinner="Downloading transformer model from Hugging Face...")
+def download_remote_transformer_model(model_subfolder: str) -> Path:
+    from huggingface_hub import snapshot_download
+
+    snapshot_path = snapshot_download(
+        repo_id=HF_MODEL_REPO,
+        repo_type="model",
+        allow_patterns=[f"{model_subfolder}/**"],
+        ignore_patterns=REMOTE_IGNORE_PATTERNS,
+    )
+    return Path(snapshot_path) / model_subfolder
+
+
+def artifact_roots() -> list[Path]:
+    return [PROJECT_ROOT]
+
+
+def first_existing_path(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+def resolve_baseline_model_path() -> Path:
+    path = first_existing_path(
+        [root / "models" / "tfidf_logreg.joblib" for root in artifact_roots()]
+        + [root / "tfidf_logreg.joblib" for root in artifact_roots()]
+    )
+    if path is None:
+        raise FileNotFoundError(f"Could not find tfidf_logreg.joblib locally or in {HF_MODEL_REPO}.")
+    return path
+
+
+def resolve_baseline_metrics_path() -> Path | None:
+    return first_existing_path(
+        [root / "models" / "baseline_metrics.json" for root in artifact_roots()]
+        + [root / "baseline_metrics.json" for root in artifact_roots()]
+    )
+
+
+def metric_path_for_model(root: Path, transformer_root: Path, model_name: str) -> Path | None:
+    return first_existing_path(
+        [
+            root / "models" / f"transformer_metrics_{model_name}.json",
+            root / f"transformer_metrics_{model_name}.json",
+            transformer_root.parent / f"transformer_metrics_{model_name}.json",
+        ]
+    )
 
 
 def read_json(path: Path) -> dict:
@@ -52,28 +120,77 @@ def read_json(path: Path) -> dict:
 
 def discover_transformers() -> list[dict]:
     artifacts = []
+    seen_dirs = set()
+    seen_model_names = set()
 
-    if TRANSFORMER_ROOT.exists():
-        for model_dir in sorted(path for path in TRANSFORMER_ROOT.iterdir() if path.is_dir()):
-            metrics_path = Path("models") / f"transformer_metrics_{model_dir.name}.json"
-            if (model_dir / "config.json").exists():
-                metrics = read_json(metrics_path)
+    for root in artifact_roots():
+        for transformer_root in [root / "models" / "transformers", root / "transformers", root]:
+            if not transformer_root.exists():
+                continue
+            for model_dir in sorted(path for path in transformer_root.iterdir() if path.is_dir()):
+                if model_dir.resolve() in seen_dirs or model_dir.name in seen_model_names:
+                    continue
+                seen_dirs.add(model_dir.resolve())
+                metrics_path = metric_path_for_model(root, transformer_root, model_dir.name)
+                metrics = read_json(metrics_path) if metrics_path is not None else {}
+                if (model_dir / "config.json").exists():
+                    seen_model_names.add(model_dir.name)
+                    artifacts.append(
+                        {
+                            "name": metrics.get("model", model_dir.name),
+                            "model_dir": model_dir,
+                            "metrics_path": metrics_path,
+                            "metrics": metrics,
+                        }
+                    )
+
+        if (root / "config.json").exists() and root.resolve() not in seen_dirs:
+            seen_dirs.add(root.resolve())
+            seen_model_names.add(root.name)
+            metrics_path = first_existing_path([root / "transformer_metrics.json"])
+            metrics = read_json(metrics_path) if metrics_path is not None else {}
+            artifacts.append(
+                {
+                    "name": metrics.get("model", root.name),
+                    "model_dir": root,
+                    "metrics_path": metrics_path,
+                    "metrics": metrics,
+                }
+            )
+
+    legacy_metrics_path = first_existing_path(
+        [root / "models" / "transformer_metrics.json" for root in artifact_roots()]
+        + [root / "transformer_metrics.json" for root in artifact_roots()]
+    )
+    for root in artifact_roots():
+        legacy_dir = first_existing_path([root / "models" / "distilbert-disaster", root / "distilbert-disaster"])
+        if legacy_dir is not None and legacy_dir.resolve() not in seen_dirs and legacy_dir.name not in seen_model_names:
+            seen_dirs.add(legacy_dir.resolve())
+            if (legacy_dir / "config.json").exists():
+                seen_model_names.add(legacy_dir.name)
+                metrics = read_json(legacy_metrics_path) if legacy_metrics_path is not None else {}
                 artifacts.append(
                     {
-                        "name": metrics.get("model", model_dir.name),
-                        "model_dir": model_dir,
-                        "metrics_path": metrics_path,
+                        "name": metrics.get("model", "distilbert-base-uncased"),
+                        "model_dir": legacy_dir,
+                        "metrics_path": legacy_metrics_path,
                         "metrics": metrics,
                     }
                 )
 
-    if LEGACY_TRANSFORMER_MODEL_DIR.exists() and (LEGACY_TRANSFORMER_MODEL_DIR / "config.json").exists():
-        metrics = read_json(LEGACY_TRANSFORMER_METRICS_PATH)
+    for model_subfolder in REMOTE_MODEL_SUBFOLDERS:
+        if model_subfolder in seen_model_names:
+            continue
+        metrics_path = first_existing_path(
+            [root / "models" / f"transformer_metrics_{model_subfolder}.json" for root in artifact_roots()]
+            + [root / f"transformer_metrics_{model_subfolder}.json" for root in artifact_roots()]
+        )
+        metrics = read_json(metrics_path) if metrics_path is not None else {}
         artifacts.append(
             {
-                "name": metrics.get("model", "distilbert-base-uncased"),
-                "model_dir": LEGACY_TRANSFORMER_MODEL_DIR,
-                "metrics_path": LEGACY_TRANSFORMER_METRICS_PATH,
+                "name": metrics.get("model", model_subfolder),
+                "model_dir": f"hf://{model_subfolder}",
+                "metrics_path": metrics_path,
                 "metrics": metrics,
             }
         )
@@ -133,14 +250,26 @@ def transformer_predict(text: str, artifact: dict) -> Prediction:
     )
 
 
-def all_predictions(text: str) -> list[Prediction]:
-    predictions = []
-    if BASELINE_MODEL_PATH.exists():
-        predictions.append(baseline_predict(text))
+def add_status_message(status, message: str) -> None:
+    if status is not None:
+        status.write(message)
 
-    for artifact in discover_transformers():
+
+def all_predictions(text: str, status=None) -> list[Prediction]:
+    predictions = []
+    try:
+        add_status_message(status, "Loading TF-IDF baseline...")
+        predictions.append(baseline_predict(text))
+    except FileNotFoundError:
+        add_status_message(status, "TF-IDF baseline artifact not found; skipping baseline.")
+        pass
+
+    transformer_artifacts = discover_transformers()
+    for artifact in transformer_artifacts:
         try:
+            add_status_message(status, f"Loading {artifact['name']}...")
             predictions.append(transformer_predict(text, artifact))
+            add_status_message(status, f"Finished {artifact['name']}.")
         except Exception as exc:
             predictions.append(
                 Prediction(
@@ -150,7 +279,9 @@ def all_predictions(text: str) -> list[Prediction]:
                     model_name=str(artifact["name"]),
                 )
             )
+            add_status_message(status, f"Could not load {artifact['name']}.")
 
+    add_status_message(status, "Running keyword heuristic...")
     predictions.append(heuristic_predict(text))
     return predictions
 
@@ -165,34 +296,20 @@ def metric_row(name: str, metrics: dict) -> dict:
         "Threshold": metrics.get("decision_threshold"),
     }
 
-
-def show_model_metrics() -> None:
-    rows = []
-    if BASELINE_METRICS_PATH.exists():
-        rows.append(metric_row("TF-IDF + Logistic Regression", read_json(BASELINE_METRICS_PATH)))
-
-    for artifact in discover_transformers():
-        rows.append(metric_row(artifact["name"], artifact["metrics"]))
-
-    if rows:
-        st.dataframe(rows, hide_index=True, use_container_width=True)
-    else:
-        st.caption("No saved metrics found yet.")
-
-
 def main() -> None:
-    st.title("Disaster Tweet Evaluator")
-    st.caption("Compare the baseline and every saved transformer model on the same tweet.")
+    st.title("Disaster or Not Tweet Evaluator")
+    st.caption("See how different models classify tweets about disasters.")
 
-    with st.sidebar:
-        st.header("Saved Metrics")
-        show_model_metrics()
+    with st.form("tweet_compare_form"):
+        example_name = st.selectbox("Example tweet", list(EXAMPLE_TWEETS.keys()))
+        tweet = st.text_area("Tweet text", value=EXAMPLE_TWEETS[example_name], height=120)
+        submitted = st.form_submit_button("Compare Models", type="primary")
 
-    example_name = st.selectbox("Example tweet", list(EXAMPLE_TWEETS.keys()))
-    tweet = st.text_area("Tweet text", value=EXAMPLE_TWEETS[example_name], height=120)
+    if submitted:
+        with st.status("Loading models and comparing predictions...", expanded=True) as status:
+            predictions = all_predictions(tweet, status)
+            status.update(label="Predictions ready.", state="complete", expanded=False)
 
-    if st.button("Compare Models", type="primary"):
-        predictions = all_predictions(tweet)
         rows = [
             {
                 "Model": prediction.model_name,

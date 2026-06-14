@@ -3,10 +3,8 @@ title: AIPI540 Disaster Tweets
 emoji: 🚨
 colorFrom: red
 colorTo: blue
-sdk: streamlit
-sdk_version: 1.57.0
-app_file: app.py
-python_version: 3.13
+sdk: docker
+app_port: 8501
 tags:
 - streamlit
 - nlp
@@ -142,6 +140,33 @@ data/sample_submission.csv
 
 ## Hugging Face Spaces
 
-This repo is configured as a Streamlit Space through the YAML front matter above. The Space runs `app.py`.
+The app is deployed to a Docker-based Hugging Face Space:
 
-If using GitHub Actions, add an `HF_TOKEN` repository secret and update `.github/workflows/publish-huggingface.yml` with your Space repo name.
+https://huggingface.co/spaces/hw391/AIPI540-disaster-or-not
+
+Large transformer model files are not committed to this repo or the Space repo. The app loads them
+from the public model repository at runtime:
+
+https://huggingface.co/hw391/disaster-or-not-tweet-model
+
+The Space deploy includes only runtime code, the Dockerfile, requirements, the small TF-IDF baseline,
+and metrics JSON files. To deploy the current branch to the Space, authenticate with Hugging Face once:
+
+```powershell
+hf auth login
+```
+
+Then run:
+
+```powershell
+.\scripts\deploy_hf_space.ps1
+```
+
+Optional parameters:
+
+```powershell
+.\scripts\deploy_hf_space.ps1 `
+  -SpaceRepo "hw391/AIPI540-disaster-or-not" `
+  -ModelRepo "hw391/disaster-or-not-tweet-model" `
+  -CommitMessage "Deploy latest app"
+```
