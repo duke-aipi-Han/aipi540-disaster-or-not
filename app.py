@@ -250,16 +250,26 @@ def transformer_predict(text: str, artifact: dict) -> Prediction:
     )
 
 
-def all_predictions(text: str) -> list[Prediction]:
+def add_status_message(status, message: str) -> None:
+    if status is not None:
+        status.write(message)
+
+
+def all_predictions(text: str, status=None) -> list[Prediction]:
     predictions = []
     try:
+        add_status_message(status, "Loading TF-IDF baseline...")
         predictions.append(baseline_predict(text))
     except FileNotFoundError:
+        add_status_message(status, "TF-IDF baseline artifact not found; skipping baseline.")
         pass
 
-    for artifact in discover_transformers():
+    transformer_artifacts = discover_transformers()
+    for artifact in transformer_artifacts:
         try:
+            add_status_message(status, f"Loading {artifact['name']}...")
             predictions.append(transformer_predict(text, artifact))
+            add_status_message(status, f"Finished {artifact['name']}.")
         except Exception as exc:
             predictions.append(
                 Prediction(
@@ -269,7 +279,9 @@ def all_predictions(text: str) -> list[Prediction]:
                     model_name=str(artifact["name"]),
                 )
             )
+            add_status_message(status, f"Could not load {artifact['name']}.")
 
+    add_status_message(status, "Running keyword heuristic...")
     predictions.append(heuristic_predict(text))
     return predictions
 
@@ -288,11 +300,16 @@ def main() -> None:
     st.title("Disaster or Not Tweet Evaluator")
     st.caption("See how different models classify tweets about disasters.")
 
-    example_name = st.selectbox("Example tweet", list(EXAMPLE_TWEETS.keys()))
-    tweet = st.text_area("Tweet text", value=EXAMPLE_TWEETS[example_name], height=120)
+    with st.form("tweet_compare_form"):
+        example_name = st.selectbox("Example tweet", list(EXAMPLE_TWEETS.keys()))
+        tweet = st.text_area("Tweet text", value=EXAMPLE_TWEETS[example_name], height=120)
+        submitted = st.form_submit_button("Compare Models", type="primary")
 
-    if st.button("Compare Models", type="primary"):
-        predictions = all_predictions(tweet)
+    if submitted:
+        with st.status("Loading models and comparing predictions...", expanded=True) as status:
+            predictions = all_predictions(tweet, status)
+            status.update(label="Predictions ready.", state="complete", expanded=False)
+
         rows = [
             {
                 "Model": prediction.model_name,
