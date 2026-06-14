@@ -7,5 +7,7 @@ __pycache__/
 models/transformer-checkpoints/
 *.log
 
+data/*.zip
+
 # disable github worflows until setup
 .github/workflows/*
